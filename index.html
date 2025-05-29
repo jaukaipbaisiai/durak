@@ -2,7 +2,7 @@
 <html lang="lt">
 <head>
   <meta charset="UTF-8">
-  <title>Durniaus Patarėjas</title>
+  <title>Durakas Patarėjas</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <style>
     body { font-family: system-ui,sans-serif; margin:0; background:#f6f6f6;}
@@ -47,12 +47,12 @@
     .btn.black { background:#444;}
     .zone-label {user-select:none;}
     #new-game-btn {float:right; margin-top:-8px;}
-    .loading { color:#b98a63; font-size:1.2em; margin-top:10px; text-align:center;}
     @media (max-width:700px) {
       .card { width:35px; height:46px; font-size:1em;}
       .zone { min-width:45px;}
       #new-game-btn {float:none;display:block;margin:8px auto 4px auto;}
     }
+    #stats.loading { color:#c87d16; font-size:1.1em; text-align:center;}
   </style>
 </head>
 <body>
@@ -60,21 +60,17 @@
     Durakas Patarėjas
     <button class="btn black" id="new-game-btn" onclick="resetAll()">Naujas žaidimas</button>
   </div>
-  <div class="helptext" style="text-align:center;font-size:1em; color:#444; margin-bottom:8px;">
-    Vilkite kortas tarp zonų: <span style="color:#ff7575">Raudona</span> (likusios), <span style="color:#49ca7d">Žalia</span> (jūsų ranka), <span style="color:#b98a63">Ruda</span> (priešininko ranka), <span style="color:#e7f4ff">Mėlyna</span> (stalas), <span style="color:#333">Juoda</span> (koziris), <span style="color:#b359ff">Violetinė</span> (muštos).<br>
-    Naudokite mygtukus po stalu ("Priešininkas pasiėmė", "Aš pasiėmiau", "Mušta") kovoms užbaigti.
-  </div>
 
   <div class="zones">
     <div style="flex:1;">
-      <div class="zone-label">Stalas (Mėlyna)</div>
+      <div class="zone-label">Stalas</div>
       <div class="zone blue" id="table-zone" style="min-height:72px;"></div>
       <button class="btn brown" id="opp-takes-btn">Priešininkas pasiėmė</button>
       <button class="btn green" id="you-take-btn">Aš pasiėmiau</button>
       <button class="btn gone" id="fight-finished-btn">Mušta</button>
     </div>
     <div>
-      <div class="zone-label">Muštos (Violetinė)</div>
+      <div class="zone-label">Muštos</div>
       <div class="zone gone" id="gone-zone"></div>
     </div>
     <div>
@@ -83,19 +79,19 @@
     </div>
   </div>
 
-  <div class="zone-label">Jūsų kortos (Žalia)</div>
+  <div class="zone-label">Jūsų kortos</div>
   <div class="zone green" id="your-zone"></div>
 
-  <div class="zone-label">Priešininko ranka (Ruda, čia kortos žinomos 100%)</div>
+  <div class="zone-label">Priešininko ranka</div>
   <div class="zone brown" id="opp-zone"></div>
 
-  <div class="zone-label">Likusi kaladė (Raudona, galimos kortos, tikimybės – %)</div>
+  <div class="zone-label">Likusi kaladė</div>
   <div class="zone red" id="deck-zone"></div>
 
   <div class="statspanel" id="stats"></div>
 
   <script>
-    // --- CARD DATA ---
+    // CARD DATA + DRAG-N-DROP + UI: all as before, but stats panel uses worker!
     const SUITS = ['♠','♥','♦','♣'];
     const RANKS = [9,10,11,12,13,14];
     const RANK_LABELS = {9:'9',10:'10',11:'J',12:'Q',13:'K',14:'A'};
@@ -109,9 +105,7 @@
     const ALL_CARDS = [];
     for(let suit of SUITS) for(let rank of RANKS) ALL_CARDS.push({rank,suit});
 
-    // --- STATE ---
     let zones, dragData = null;
-    let isCalculating = false;
     function defaultZones() {
       return {
         deck: ALL_CARDS.map(cardToString),
@@ -124,11 +118,7 @@
     }
     zones = defaultZones();
 
-    function showCalculating(msg=true) {
-      document.getElementById('stats').innerHTML = msg ? '<div class="loading">Skaičiuojama... Palaukite.</div>' : '';
-    }
-
-    // --- DRAG-N-DROP HANDLERS ---
+    // DRAG N DROP UI
     function renderCard(card, zone, extra={}) {
       let suit = card.slice(-1);
       let classes = `card ${zone}`;
@@ -140,8 +130,8 @@
     function renderZone(zone, el, options={}) {
       let html = '';
       let list = zones[zone];
-      if(zone==='deck') {
-        let probs = calcProbabilities();
+      if(zone==='deck' && lastStats) {
+        let probs = lastStats.probs || {};
         let sorted = list.slice().sort((a,b)=>(probs[b]||0)-(probs[a]||0));
         html = sorted.map(card=>renderCard(card, zone, {prob:probs[card]||0})).join('');
       } else {
@@ -150,7 +140,6 @@
       el.innerHTML = html;
     }
     function safeRender() {
-      if (isCalculating) return;
       try {
         renderZone('trump',document.getElementById('trump-zone'));
         renderZone('your',document.getElementById('your-zone'));
@@ -161,17 +150,15 @@
         renderStats();
         setupZoneDnD();
       } catch(e) {
-        document.getElementById('stats').innerHTML = "<b>Klaida!</b> Bandykite „Naujas žaidimas“.<br>"+e;
+        document.getElementById('stats').innerHTML = "<b>Klaida! Atstatykite žaidimą.</b>";
       }
     }
     let renderTimeout;
     function render() {
-      // Debounce (crash-proof on very fast action)
-      if (isCalculating) return;
       if (renderTimeout) clearTimeout(renderTimeout);
-      renderTimeout = setTimeout(safeRender, 40);
+      renderTimeout = setTimeout(safeRender, 10);
+      updateStats(); // Always trigger stats update
     }
-    // Drag+Drop Mouse/Touch events
     window.onDrag = function(e, card, fromZone) {
       dragData = {card,fromZone};
       e.dataTransfer.effectAllowed='move';
@@ -189,7 +176,6 @@
         };
       });
     }
-    // Touch support (for mobile drag): simplified
     let touchTimer=null;
     window.onTouchStart = function(e, card, fromZone) {
       dragData={card,fromZone};
@@ -208,14 +194,12 @@
       document.body.removeEventListener('touchmove',touchMove,false);
       document.body.removeEventListener('touchend',touchEnd,false);
     }
-    // Mouse click fallback for quick moves
     window.onMouseDown = function(e,card,fromZone) {
       if(e.ctrlKey||e.shiftKey) {
         let toZone=prompt("Perkelti į: deck/your/opp/table/trump/gone?",'your');
         if(['deck','your','opp','table','trump','gone'].includes(toZone)) moveCard(card,fromZone,toZone);
       }
     }
-    // --- MOVE LOGIC ---
     function moveCard(card, from, to) {
       if(from===to) return;
       let idx = zones[from].indexOf(card);
@@ -224,153 +208,61 @@
       else if(zones[to].indexOf(card)===-1) zones[to].push(card);
       render();
     }
-    // --- PROBABILITIES, SUGGESTIONS, SIMULATIONS ---
-    function unknownCards() {
-      let known = [].concat(zones.your, zones.trump, zones.opp, zones.table, zones.gone);
-      let knownSet = new Set(known);
-      return ALL_CARDS.map(cardToString).filter(card=>!knownSet.has(card));
+    // --- FIGHT RESOLUTION BUTTONS ---
+    document.getElementById('opp-takes-btn').onclick = function() {
+      try { zones.opp.push(...zones.table); zones.table = []; render(); } catch(e){render();}
+    };
+    document.getElementById('you-take-btn').onclick = function() {
+      try { zones.your.push(...zones.table); zones.table = []; render(); } catch(e){render();}
+    };
+    document.getElementById('fight-finished-btn').onclick = function() {
+      try { zones.gone.push(...zones.table); zones.table = []; render(); } catch(e){render();}
+    };
+    window.resetAll = function() {
+      zones = defaultZones();
+      render();
+    };
+
+    // === WEB WORKER FOR STATS ===
+    let worker = new Worker('worker.js');
+    let lastStats = null, lastSentState = '';
+    let statsVer = 0;
+    function updateStats() {
+      // Only send minimal game state to worker (to avoid lockup)
+      let state = {
+        your: zones.your.slice(),
+        opp: zones.opp.slice(),
+        trump: zones.trump.slice(),
+        table: zones.table.slice(),
+        gone: zones.gone.slice(),
+        // Don't send deck - it is inferred
+      };
+      let key = JSON.stringify(state);
+      statsVer++;
+      let myver = statsVer;
+      document.getElementById('stats').classList.add('loading');
+      document.getElementById('stats').innerHTML = '<i>Skaičiuojama...</i>';
+      worker.postMessage({type:'stats',state,ver:myver});
     }
-    function oppHandSize() { return zones.opp.length + unknownOppHand(); }
-    function unknownOppHand() {
-      let nKnown = zones.opp.length;
-      if(zones.opp.length===0 && zones.your.length>0) return 6;
-      let totalKnown = zones.your.length+zones.trump.length+zones.opp.length+zones.table.length+zones.gone.length;
-      let left = 24-totalKnown;
-      return left;
-    }
-    function calcProbabilities() {
-      let unknown = unknownCards();
-      let k = unknownOppHand();
-      let probs = {};
-      for(let c of zones.opp) probs[c]=100;
-      for(let c of unknown) probs[c]=0;
-      if(k<=0) return probs;
-      let rest = unknown.filter(c=>probs[c]!==100);
-      if(rest.length>0) {
-        let val = (100/rest.length).toFixed(1);
-        for(let c of rest) probs[c]=val;
+    worker.onmessage = function(e) {
+      let data = e.data;
+      if(data.type==='stats') {
+        if(data.ver < statsVer) return; // Outdated
+        lastStats = data;
+        renderStats();
       }
-      return probs;
-    }
-    function shuffle(a) { for(let i=a.length-1;i>0;i--){let j=Math.floor(Math.random()*(i+1));[a[i],a[j]]=[a[j],a[i]];} }
-    function bestAttack() {
-      let your = zones.your.slice();
-      if(your.length===0) return null;
-      let unknown = unknownCards(), k = unknownOppHand();
-      let probs = {};
-      for(let myCard of your) {
-        let nWin=0, nTotal=0, nTrump=0;
-        let samples= Math.min(400, Math.pow(unknown.length,k));
-        for(let t=0;t<samples;t++) {
-          let pool = unknown.slice(); shuffle(pool);
-          let hand = pool.slice(0,k);
-          let res = canOpponentDefend(myCard, hand.concat(zones.opp));
-          if(!res.can) nWin++;
-          if(res.trump) nTrump++;
-          nTotal++;
-        }
-        probs[myCard]={forceTake:(nWin/nTotal*100).toFixed(1),forceTrump:(nTrump/nTotal*100).toFixed(1)};
-      }
-      let best = your[0];
-      for(let card of your) {
-        if(Number(probs[card].forceTake)>Number(probs[best].forceTake) ||
-          (probs[card].forceTake===probs[best].forceTake && Number(probs[card].forceTrump)>Number(probs[best].forceTrump)))
-            best = card;
-      }
-      return {card:best,all:probs};
-    }
-    function canOpponentDefend(attCard, oppHand) {
-      let a = stringToCard(attCard);
-      let trumpCard = zones.trump[0]||'9♠', trump = trumpCard.slice(-1);
-      let can=false,trumpUsed=false;
-      for(let card of oppHand) {
-        let c = stringToCard(card);
-        if(c.suit===a.suit && c.rank>a.rank) can=true;
-        if(c.suit===trump && a.suit!==trump) {can=true;trumpUsed=true;}
-      }
-      return {can,trump:trumpUsed};
-    }
-    function bestDefense(attCard) {
-      let your = zones.your.slice();
-      let a = stringToCard(attCard);
-      let trumpCard = zones.trump[0]||'9♠', trump = trumpCard.slice(-1);
-      let candidates = [];
-      for(let cstr of your) {
-        let c = stringToCard(cstr);
-        if(c.suit===a.suit && c.rank>a.rank) candidates.push(cstr);
-        if(c.suit===trump && a.suit!==trump) candidates.push(cstr);
-      }
-      if(candidates.length===0) return null;
-      candidates.sort((a,b)=>{
-        let ca=stringToCard(a), cb=stringToCard(b);
-        if(ca.suit!==cb.suit) return ca.suit<cb.suit?-1:1;
-        return ca.rank-cb.rank;
-      });
-      return candidates[0];
-    }
-    function winProbability() {
-      let wins=0, runs=0;
-      let unknown = unknownCards(), k = unknownOppHand();
-      if(zones.your.length===0) return 0;
-      for(let t=0;t<25;t++) {
-        let pool = unknown.slice(); shuffle(pool);
-        let opp = pool.slice(0,k).concat(zones.opp), you = zones.your.slice(), deck = pool.slice(k);
-        let trumpCard = zones.trump[0]||'9♠', trump = trumpCard.slice(-1);
-        let res = simulateGreedy(you, opp, deck, trump);
-        if(res==='win') wins++;
-        runs++;
-      }
-      return (wins/runs*100).toFixed(1);
-    }
-    function simulateGreedy(you, opp, deck, trump) {
-      you=you.slice(); opp=opp.slice();
-      let yourTurn=true;
-      while(you.length && opp.length) {
-        if(yourTurn) {
-          let attack = you.slice().sort((a,b)=>{
-            let ca=stringToCard(a),cb=stringToCard(b);
-            if(ca.suit!==cb.suit) return ca.suit<cb.suit?-1:1; return ca.rank-cb.rank; })[0];
-          you.splice(you.indexOf(attack),1);
-          let canDef=false;
-          for(let c of opp) {
-            let cc=stringToCard(c), ac=stringToCard(attack);
-            if(cc.suit===ac.suit&&cc.rank>ac.rank) {canDef=true; opp.splice(opp.indexOf(c),1); break;}
-            if(cc.suit===trump&&ac.suit!==trump) {canDef=true; opp.splice(opp.indexOf(c),1); break;}
-          }
-          if(!canDef) opp.push(attack);
-        } else {
-          let attack = opp.slice().sort((a,b)=>{
-            let ca=stringToCard(a),cb=stringToCard(b);
-            if(ca.suit!==cb.suit) return ca.suit<cb.suit?-1:1; return ca.rank-cb.rank; })[0];
-          opp.splice(opp.indexOf(attack),1);
-          let canDef=false;
-          for(let c of you) {
-            let cc=stringToCard(c), ac=stringToCard(attack);
-            if(cc.suit===ac.suit&&cc.rank>ac.rank) {canDef=true; you.splice(you.indexOf(c),1); break;}
-            if(cc.suit===trump&&ac.suit!==trump) {canDef=true; you.splice(you.indexOf(c),1); break;}
-          }
-          if(!canDef) you.push(attack);
-        }
-        yourTurn=!yourTurn;
-      }
-      if(you.length===0) return 'win';
-      if(opp.length===0) return 'lose';
-      return 'draw';
-    }
-    // --- STATS + CHART ---
-    async function renderStats() {
-      isCalculating = true;
-      showCalculating();
-      await new Promise(r=>setTimeout(r,30)); // Let UI update for fast actions!
+    };
+
+    function renderStats() {
+      document.getElementById('stats').classList.remove('loading');
       try {
         let statsDiv = document.getElementById('stats');
-        let probs = calcProbabilities();
-        let cards = unknownCards();
+        let probs = lastStats && lastStats.probs || {};
+        let cards = lastStats && lastStats.unknownCards || [];
         let ranked = cards.slice().sort((a,b)=>(probs[b]||0)-(probs[a]||0));
-        let bestA = bestAttack();
-        let defCard = zones.table[0];
-        let bestD = defCard?bestDefense(defCard):null;
-        let winp = winProbability();
+        let bestA = lastStats && lastStats.bestA;
+        let bestD = lastStats && lastStats.bestD;
+        let winp = lastStats && lastStats.winp || '...';
         let chartBars = ranked.slice(0,12).map(c=>{
           let w = Math.max(3, Math.round((probs[c]||0)*2.3));
           let cc = stringToCard(c);
@@ -388,43 +280,15 @@
               bestA? `${cardToString(stringToCard(bestA.card))} (priverčia pasiimti: ${bestA.all[bestA.card].forceTake}%, priverčia mušti kozirį: ${bestA.all[bestA.card].forceTrump}%)`:'N/A'
             }</li>
             <li>Geriausia gynyba: ${
-              defCard? (bestD? `${cardToString(stringToCard(bestD))}` : 'Imti') : 'N/A'
+              bestD? `${cardToString(stringToCard(bestD))}` : 'Imti'
             }</li>
-            <li>Laimėjimo tikimybė (simuliacija): <b>${winp}%</b></li>
+            <li>Laimėjimo tikimybė: <b>${winp}%</b></li>
           </ul>
         `;
       } catch(e) {
-        document.getElementById('stats').innerHTML = "<b>Klaida!</b> Statistika nepavyko.";
+        document.getElementById('stats').innerHTML = "<b>Klaida! Atstatykite žaidimą.</b>";
       }
-      isCalculating = false;
     }
-    // --- FIGHT RESOLUTION BUTTONS ---
-    document.getElementById('opp-takes-btn').onclick = function() {
-      try {
-        zones.opp.push(...zones.table);
-        zones.table = [];
-        render();
-      } catch(e){render();}
-    };
-    document.getElementById('you-take-btn').onclick = function() {
-      try {
-        zones.your.push(...zones.table);
-        zones.table = [];
-        render();
-      } catch(e){render();}
-    };
-    document.getElementById('fight-finished-btn').onclick = function() {
-      try {
-        zones.gone.push(...zones.table);
-        zones.table = [];
-        render();
-      } catch(e){render();}
-    };
-    window.resetAll = function() {
-      zones = defaultZones();
-      render();
-    };
-    // --- INIT ---
     render();
   </script>
 </body>
