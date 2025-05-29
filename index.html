@@ -79,10 +79,10 @@
     </div>
   </div>
 
-  <div class="zone-label">Jūsų kortos</div>
+  <div class="zone-label">Jūsų kortos <span id="your-count"></span></div>
   <div class="zone green" id="your-zone"></div>
 
-  <div class="zone-label">Priešininko ranka</div>
+  <div class="zone-label">Priešininko ranka <span id="opp-count"></span></div>
   <div class="zone brown" id="opp-zone"></div>
 
   <div class="zone-label">Likusi kaladė</div>
@@ -91,7 +91,7 @@
   <div class="statspanel" id="stats"></div>
 
   <script>
-    // CARD DATA + DRAG-N-DROP + UI: all as before, but stats panel uses worker!
+    // --- CARD DATA ---
     const SUITS = ['♠','♥','♦','♣'];
     const RANKS = [9,10,11,12,13,14];
     const RANK_LABELS = {9:'9',10:'10',11:'J',12:'Q',13:'K',14:'A'};
@@ -149,6 +149,8 @@
         renderZone('gone',document.getElementById('gone-zone'));
         renderStats();
         setupZoneDnD();
+        document.getElementById('your-count').textContent = '(' + zones.your.length + ')';
+        document.getElementById('opp-count').textContent = '(' + (zones.opp.length + (lastStats?lastStats.oppUnknownCount:0)) + ')';
       } catch(e) {
         document.getElementById('stats').innerHTML = "<b>Klaida! Atstatykite žaidimą.</b>";
       }
@@ -208,7 +210,6 @@
       else if(zones[to].indexOf(card)===-1) zones[to].push(card);
       render();
     }
-    // --- FIGHT RESOLUTION BUTTONS ---
     document.getElementById('opp-takes-btn').onclick = function() {
       try { zones.opp.push(...zones.table); zones.table = []; render(); } catch(e){render();}
     };
@@ -228,28 +229,27 @@
     let lastStats = null, lastSentState = '';
     let statsVer = 0;
     function updateStats() {
-      // Only send minimal game state to worker (to avoid lockup)
       let state = {
         your: zones.your.slice(),
         opp: zones.opp.slice(),
         trump: zones.trump.slice(),
         table: zones.table.slice(),
         gone: zones.gone.slice(),
-        // Don't send deck - it is inferred
       };
-      let key = JSON.stringify(state);
+      let totalKnown = zones.your.length+zones.trump.length+zones.opp.length+zones.table.length+zones.gone.length;
+      let oppUnknownCount = 24-totalKnown;
       statsVer++;
       let myver = statsVer;
       document.getElementById('stats').classList.add('loading');
-      document.getElementById('stats').innerHTML = '<i>Skaičiuojama...</i>';
-      worker.postMessage({type:'stats',state,ver:myver});
+      document.getElementById('stats').innerHTML = '';
+      worker.postMessage({type:'stats',state,ver:myver, oppUnknownCount});
     }
     worker.onmessage = function(e) {
       let data = e.data;
       if(data.type==='stats') {
         if(data.ver < statsVer) return; // Outdated
         lastStats = data;
-        renderStats();
+        safeRender();
       }
     };
 
@@ -260,8 +260,6 @@
         let probs = lastStats && lastStats.probs || {};
         let cards = lastStats && lastStats.unknownCards || [];
         let ranked = cards.slice().sort((a,b)=>(probs[b]||0)-(probs[a]||0));
-        let bestA = lastStats && lastStats.bestA;
-        let bestD = lastStats && lastStats.bestD;
         let winp = lastStats && lastStats.winp || '...';
         let chartBars = ranked.slice(0,12).map(c=>{
           let w = Math.max(3, Math.round((probs[c]||0)*2.3));
@@ -270,18 +268,12 @@
           return `<div class="chartbar" style="width:${w}px;background:${col};"></div> <span class="chartlabel" style="color:${col}">${cardToString(cc)} (${probs[c]}%)</span>`;
         }).join('<br>');
         statsDiv.innerHTML = `
-          <div style="font-size:1.1em;"><b>Statistika ir Patarimai</b></div>
+          <div style="font-size:1.1em;"><b>Tikimybės</b></div>
           <ul>
             <li>Priešininko tikėtinos kortos:<br>
               <span>${ranked.slice(0,7).map(c=>`${cardToString(stringToCard(c))} (${probs[c]}%)`).join(', ')}</span>
               <div style="margin-top:7px;">${chartBars}</div>
             </li>
-            <li>Geriausia ataka: ${
-              bestA? `${cardToString(stringToCard(bestA.card))} (priverčia pasiimti: ${bestA.all[bestA.card].forceTake}%, priverčia mušti kozirį: ${bestA.all[bestA.card].forceTrump}%)`:'N/A'
-            }</li>
-            <li>Geriausia gynyba: ${
-              bestD? `${cardToString(stringToCard(bestD))}` : 'Imti'
-            }</li>
             <li>Laimėjimo tikimybė: <b>${winp}%</b></li>
           </ul>
         `;
