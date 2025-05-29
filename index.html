@@ -1,0 +1,373 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Durak Tracker & Advisor</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <style>
+    body { font-family: system-ui, sans-serif; margin:0; background:#f6f6f6; }
+    .zone { margin: 12px auto; padding: 12px; border-radius: 18px; min-height: 60px; }
+    .red { background: #ffeaea; border: 2px solid #ff7575; }
+    .green { background: #eaffec; border: 2px solid #49ca7d; }
+    .black { background: #eee; border: 2px solid #333; min-width:55px; display:inline-block; vertical-align:top;}
+    .blue { background: #e7f4ff; border: 2px solid #3cbcff; min-height: 80px;}
+    .brown { background: #eee7dc; border: 2px solid #ba8356; min-width: 80px;}
+    .statspanel { background: #fff; border: 2px solid #eee; border-radius: 15px; margin:12px; padding:14px;}
+    .cards { display: flex; flex-wrap: wrap; gap: 8px; }
+    .card {
+      width: 48px; height: 68px; background: white; border: 2px solid #bbb; border-radius: 10px;
+      font-size: 1.2em; font-weight: bold; color: #222; display: flex; align-items: center; justify-content: center;
+      margin: 2px; position: relative; cursor: pointer; user-select: none;
+      box-shadow: 0 2px 8px rgba(80,80,80,0.05);
+      transition: box-shadow 0.1s;
+    }
+    .card.red { border-color: #ff7575;}
+    .card.green { border-color: #49ca7d;}
+    .card.blue { border-color: #3cbcff;}
+    .card.black { border-color: #333;}
+    .card.brown { border-color: #ba8356;}
+    .prob { position:absolute; bottom:2px; right:2px; background:rgba(255,118,90,0.87); color:white; font-size:0.9em; border-radius:6px; padding:0 3px;}
+    .header { text-align:center; font-size:1.7em; margin:10px 0 0 0; color: #313253;}
+    .zone-label { font-weight:bold; margin-bottom:3px;}
+    .helptext { color: #666; font-size:0.97em; margin-bottom:10px;}
+    @media (max-width: 700px) {
+      .cards {gap:3px;}
+      .card {width:37px; height:52px; font-size:1em;}
+    }
+  </style>
+</head>
+<body>
+  <div class="header">Durak Live Tracker & Advisor</div>
+  <div class="helptext" style="text-align:center;">
+    Click cards to move between zones. <b>Red</b>: deck pool; <b>Black</b>: trump; <b>Green</b>: your hand; <b>Brown</b>: opponent's hand (drag in when they take); <b>Blue</b>: table. <br>
+    Red cards show <b>% chance</b> of being in opponent's hand. <b>Stats/advice below update live!</b>
+  </div>
+  <div style="display:flex;gap:12px;justify-content:center;align-items:flex-start;">
+    <div>
+      <div class="zone-label">Trump</div>
+      <div class="zone black" id="trump-zone"></div>
+    </div>
+    <div>
+      <div class="zone-label">Deck bottom (optional)</div>
+      <div class="zone black" id="bottom-zone"></div>
+    </div>
+    <div style="flex:1;">
+      <div class="zone-label">Table (blue area)</div>
+      <div class="zone blue" id="table-zone"></div>
+    </div>
+  </div>
+  <div class="zone-label" style="margin-left:14px;">Your hand (green area)</div>
+  <div class="zone green" id="your-zone"></div>
+  <div class="zone-label" style="margin-left:14px;">Opponent's hand (brown area, drag here when they take; adjust count if needed)</div>
+  <div class="zone brown" id="opp-zone" style="display:flex;align-items:center;"></div>
+  <div class="zone-label" style="margin-left:14px;">Deck/Unknown cards (red area, click to move; % = chance in opponent's hand)</div>
+  <div class="zone red" id="deck-zone"></div>
+  <div class="statspanel" id="stats"></div>
+  <div style="margin:18px auto 6px auto;text-align:center;font-size:0.93em;color:#aaa;">
+    <span>Made by <a href="https://chat.openai.com/" style="color:#3cbcff;">AI</a> • No backend • All logic is client-side • <b>Refresh to reset</b></span>
+  </div>
+  <script>
+    // --- CARD DATA ---
+    const SUITS = ['♠','♥','♦','♣'];
+    const RANKS = [9,10,11,12,13,14];
+    const RANK_LABELS = {9:'9',10:'10',11:'J',12:'Q',13:'K',14:'A'};
+    function cardToString(card) { return RANK_LABELS[card.rank]+card.suit; }
+    function stringToCard(s) {
+      let match = s.match(/^(\d+|J|Q|K|A)([♠♥♦♣])$/);
+      let r = match[1], suit = match[2];
+      let rank = (r==='J')?11 : (r==='Q')?12 : (r==='K')?13 : (r==='A')?14 : Number(r);
+      return {rank,suit};
+    }
+    const ALL_CARDS = [];
+    for(let suit of SUITS) for(let rank of RANKS) ALL_CARDS.push({rank,suit});
+    // --- STATE ---
+    let zones = {
+      deck: ALL_CARDS.map(cardToString),  // red zone
+      trump: [],
+      bottom: [],
+      your: [],
+      opp: [],
+      table: []
+    };
+    let oppHandSize = 6; // start
+    function totalOppHand() { return zones.opp.length; }
+    // --- CARD MOVE HANDLERS ---
+    function moveCard(card, from, to) {
+      if(from===to) return;
+      let idx = zones[from].indexOf(card);
+      if(idx!==-1) zones[from].splice(idx,1);
+      if(to==='opp' && totalOppHand()>=12) return; // don't overflow
+      if(zones[to].indexOf(card)===-1) zones[to].push(card);
+      if(to==='trump') { zones.trump=[card]; if(from!=='deck') zones.deck.push(card);}
+      if(to==='bottom') { zones.bottom=[card]; if(from!=='deck') zones.deck.push(card);}
+      render();
+    }
+    // --- RENDER FUNCTIONS ---
+    function renderCard(card, zone, extra={}) {
+      let classes = "card "+zone;
+      let inner = card;
+      if(card.length>2) inner = cardToString(stringToCard(card));
+      let prob = (extra.prob!==undefined)? `<span class="prob">${extra.prob}%</span>` : '';
+      return `<div class="${classes}" onclick="onCardClick('${card}','${zone}')">${inner}${prob}</div>`;
+    }
+    function renderZone(zone, el, options={}) {
+      let html = '';
+      let list = zones[zone];
+      if(zone==='deck') {
+        // show % on each card, sorted by probability
+        let probs = calcProbabilities();
+        let sorted = list.slice().sort((a,b)=>(probs[b]||0)-(probs[a]||0));
+        html = sorted.map(card=>renderCard(card, zone, {prob:probs[card]||0})).join('');
+      } else if(zone==='opp') {
+        html = list.map(card=>renderCard(card, zone)).join('');
+        html += `<input type="number" min="0" max="12" value="${oppHandSize}" style="width:32px;margin-left:10px;" onchange="onOppHandChange(this.value)">`;
+        html += '<span style="font-size:0.9em; color:#b98a63; margin-left:7px;">Hand size</span>';
+      } else {
+        html = list.map(card=>renderCard(card, zone)).join('');
+      }
+      el.innerHTML = `<div class="cards">${html}</div>`;
+    }
+    function render() {
+      renderZone('trump',document.getElementById('trump-zone'));
+      renderZone('bottom',document.getElementById('bottom-zone'));
+      renderZone('your',document.getElementById('your-zone'));
+      renderZone('opp',document.getElementById('opp-zone'));
+      renderZone('table',document.getElementById('table-zone'));
+      renderZone('deck',document.getElementById('deck-zone'));
+      renderStats();
+    }
+    // --- EVENTS ---
+    window.onCardClick = function(card, fromZone) {
+      if(fromZone==='deck') {
+        // Move to: trump, your, opp, table, bottom
+        let choices = ['your','opp','table','trump','bottom'];
+        let to = prompt("Move to: your / opp / table / trump / bottom ?",'your');
+        if(!choices.includes(to)) return;
+        moveCard(card, 'deck', to);
+        if(to==='opp') oppHandSize = totalOppHand();
+      } else if(fromZone==='your') moveCard(card,'your','deck');
+      else if(fromZone==='opp') { moveCard(card,'opp','deck'); oppHandSize=totalOppHand(); }
+      else if(fromZone==='trump') moveCard(card,'trump','deck');
+      else if(fromZone==='bottom') moveCard(card,'bottom','deck');
+      else if(fromZone==='table') moveCard(card,'table','deck');
+    }
+    window.onOppHandChange = function(val) {
+      oppHandSize = Math.max(0,Math.min(12,parseInt(val)||0));
+      // If more cards in zone, trim to match
+      while(zones.opp.length>oppHandSize) zones.opp.pop();
+      render();
+    }
+    // --- LOGIC: PROBABILITIES, SUGGESTIONS, WIN ODDS ---
+    function unknownCards() {
+      let known = [].concat(zones.your, zones.trump, zones.bottom, zones.opp, zones.table);
+      let knownSet = new Set(known);
+      return ALL_CARDS.map(cardToString).filter(card=>!knownSet.has(card));
+    }
+    function calcProbabilities() {
+      // If unknowns <=10, use exact. Else, Monte Carlo (2000 samples)
+      let unknown = unknownCards();
+      let n = unknown.length, k = oppHandSize - zones.opp.length;
+      let oppKnown = zones.opp.slice();
+      if(k<0) k=0;
+      let probs = {};
+      if(k===0) { // only known opp cards
+        for(let c of unknown) probs[c]=0;
+        for(let c of oppKnown) probs[c]=100;
+        return probs;
+      }
+      if(n<=10) {
+        let combs = kComb(unknown, k);
+        let counter = {};
+        for(let comb of combs) {
+          let hand = oppKnown.concat(comb);
+          for(let c of hand) counter[c]=(counter[c]||0)+1;
+        }
+        let total = combs.length;
+        for(let c of unknown) probs[c] = ((counter[c]||0)/total*100).toFixed(1);
+        for(let c of oppKnown) probs[c]=100;
+        return probs;
+      }
+      // Monte Carlo
+      let samples = 2000, counter = {};
+      for(let t=0;t<samples;t++) {
+        let pool = unknown.slice();
+        shuffle(pool);
+        let hand = oppKnown.concat(pool.slice(0,k));
+        for(let c of hand) counter[c]=(counter[c]||0)+1;
+      }
+      for(let c of unknown) probs[c]=((counter[c]||0)/samples*100).toFixed(1);
+      for(let c of oppKnown) probs[c]=100;
+      return probs;
+    }
+    function kComb(arr, k) { // generate all k-combinations
+      let ret = [];
+      function combi(path, start) {
+        if(path.length===k) { ret.push(path.slice()); return;}
+        for(let i=start;i<arr.length;i++) combi(path.concat([arr[i]]),i+1);
+      }
+      combi([],0);
+      return ret;
+    }
+    function shuffle(a) { for(let i=a.length-1;i>0;i--) {let j=Math.floor(Math.random()*(i+1));[a[i],a[j]]=[a[j],a[i]];} }
+    function bestAttack() {
+      let your = zones.your.slice();
+      if(your.length===0) return null;
+      let unknown = unknownCards(), k = oppHandSize - zones.opp.length;
+      let oppKnown = zones.opp.slice();
+      if(k<0) k=0;
+      let probs = {};
+      for(let myCard of your) {
+        let nWin=0, nTotal=0, nTrump=0;
+        if(unknown.length<=9) {
+          let combs = kComb(unknown, k);
+          for(let comb of combs) {
+            let oppHand = oppKnown.concat(comb);
+            let res = canOpponentDefend(myCard, oppHand);
+            if(!res.can) nWin++;
+            if(res.trump) nTrump++;
+            nTotal++;
+          }
+        } else {
+          let samples=900;
+          for(let t=0;t<samples;t++) {
+            let pool = unknown.slice(); shuffle(pool);
+            let oppHand = oppKnown.concat(pool.slice(0,k));
+            let res = canOpponentDefend(myCard, oppHand);
+            if(!res.can) nWin++;
+            if(res.trump) nTrump++;
+            nTotal++;
+          }
+        }
+        probs[myCard]={forceTake:(nWin/nTotal*100).toFixed(1),forceTrump:(nTrump/nTotal*100).toFixed(1)};
+      }
+      // Pick card maximizing forceTake, then forceTrump
+      let best = your[0];
+      for(let card of your) {
+        if(Number(probs[card].forceTake)>Number(probs[best].forceTake) ||
+          (probs[card].forceTake===probs[best].forceTake && Number(probs[card].forceTrump)>Number(probs[best].forceTrump)))
+            best = card;
+      }
+      return {card:best,all:probs};
+    }
+    function canOpponentDefend(attCard, oppHand) {
+      let a = stringToCard(attCard);
+      let can=false,trump=false;
+      for(let card of oppHand) {
+        let c = stringToCard(card);
+        if(c.suit===a.suit && c.rank>a.rank) can=true;
+        if(c.suit===zones.trump[0]?.slice(-1) && a.suit!==zones.trump[0]?.slice(-1)) {can=true;trump=true;}
+      }
+      return {can,trump};
+    }
+    function bestDefense(attCard) {
+      let your = zones.your.slice();
+      let a = stringToCard(attCard);
+      let candidates = [];
+      for(let cstr of your) {
+        let c = stringToCard(cstr);
+        if(c.suit===a.suit && c.rank>a.rank) candidates.push(cstr);
+        if(c.suit===zones.trump[0]?.slice(-1) && a.suit!==zones.trump[0]?.slice(-1)) candidates.push(cstr);
+      }
+      if(candidates.length===0) return null;
+      candidates.sort((a,b)=>{
+        let ca=stringToCard(a), cb=stringToCard(b);
+        if(ca.suit!==cb.suit) return ca.suit<cb.suit?-1:1;
+        return ca.rank-cb.rank;
+      });
+      return candidates[0];
+    }
+    function winProbability() {
+      // Monte Carlo: simulate 300 full games (random plausible hands, simple greedy play)
+      let wins=0, runs=0;
+      let unknown = unknownCards(), k = oppHandSize - zones.opp.length;
+      let oppKnown = zones.opp.slice();
+      if(k<0) k=0;
+      if(zones.your.length===0) return 0;
+      for(let t=0;t<300;t++) {
+        let pool = unknown.slice(); shuffle(pool);
+        let oppHand = oppKnown.concat(pool.slice(0,k));
+        let deck = pool.slice(k);
+        let you = zones.your.slice();
+        let opp = oppHand.slice();
+        let trump = zones.trump[0]?.slice(-1) || '♠';
+        let res = simulateGreedy(you, opp, deck, trump);
+        if(res==='win') wins++;
+        runs++;
+      }
+      return (wins/runs*100).toFixed(1);
+    }
+    function simulateGreedy(you, opp, deck, trump) {
+      you = you.slice(); opp = opp.slice(); deck = deck.slice();
+      let yourTurn=true;
+      while(you.length && opp.length) {
+        if(yourTurn) {
+          // Attack with lowest
+          let attack = you.slice().sort((a,b)=>{
+            let ca=stringToCard(a), cb=stringToCard(b);
+            if(ca.suit!==cb.suit) return ca.suit<cb.suit?-1:1;
+            return ca.rank-cb.rank;
+          })[0];
+          you.splice(you.indexOf(attack),1);
+          // Opponent defense
+          let canDef=false;
+          for(let c of opp) {
+            let cc=stringToCard(c), ac=stringToCard(attack);
+            if(cc.suit===ac.suit && cc.rank>ac.rank) {canDef=true; opp.splice(opp.indexOf(c),1); break;}
+            if(cc.suit===trump && ac.suit!==trump) {canDef=true; opp.splice(opp.indexOf(c),1); break;}
+          }
+          if(!canDef) opp.push(attack);
+        } else {
+          // Opponent attacks with lowest
+          let attack = opp.slice().sort((a,b)=>{
+            let ca=stringToCard(a), cb=stringToCard(b);
+            if(ca.suit!==cb.suit) return ca.suit<cb.suit?-1:1;
+            return ca.rank-cb.rank;
+          })[0];
+          opp.splice(opp.indexOf(attack),1);
+          // You defend
+          let canDef=false;
+          for(let c of you) {
+            let cc=stringToCard(c), ac=stringToCard(attack);
+            if(cc.suit===ac.suit && cc.rank>ac.rank) {canDef=true; you.splice(you.indexOf(c),1); break;}
+            if(cc.suit===trump && ac.suit!==trump) {canDef=true; you.splice(you.indexOf(c),1); break;}
+          }
+          if(!canDef) you.push(attack);
+        }
+        // No refill from deck for simplicity (endgame)
+        yourTurn=!yourTurn;
+      }
+      if(you.length===0) return 'win';
+      if(opp.length===0) return 'lose';
+      return 'draw';
+    }
+    function renderStats() {
+      let statsDiv = document.getElementById('stats');
+      // Card probabilities (sorted)
+      let probs = calcProbabilities();
+      let cards = unknownCards();
+      let ranked = cards.slice().sort((a,b)=>(probs[b]||0)-(probs[a]||0));
+      let bestA = bestAttack();
+      let defCard = zones.table[0];
+      let bestD = defCard?bestDefense(defCard):null;
+      let winp = winProbability();
+      statsDiv.innerHTML = `
+        <div style="font-size:1.12em;"><b>Live Stats & Advisor</b></div>
+        <ul>
+          <li>Opponent's most likely cards: ${
+            ranked.slice(0,6).map(c=>`${cardToString(stringToCard(c))} (${probs[c]}%)`).join(', ')
+          }</li>
+          <li>Best attack: ${
+            bestA? `${cardToString(stringToCard(bestA.card))} (forces take: ${bestA.all[bestA.card].forceTake}%, forces trump: ${bestA.all[bestA.card].forceTrump}%)`:'N/A'
+          }</li>
+          <li>Best defense: ${
+            defCard? (bestD? `${cardToString(stringToCard(bestD))}` : 'Take') : 'N/A'
+          }</li>
+          <li>Win probability (greedy sim): <b>${winp}%</b></li>
+        </ul>
+      `;
+    }
+    // --- INIT ---
+    render();
+  </script>
+</body>
+</html>
